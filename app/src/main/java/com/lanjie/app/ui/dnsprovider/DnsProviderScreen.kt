@@ -1,0 +1,199 @@
+package com.lanjie.app.ui.dnsprovider
+
+import android.widget.Toast
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.lanjie.app.R
+import com.lanjie.app.data.entities.DnsProviders
+import com.lanjie.app.ui.dnsprovider.component.ActiveDnsHeroCard
+import com.lanjie.app.ui.dnsprovider.component.CategoryHeader
+import com.lanjie.app.ui.dnsprovider.component.CustomDnsBottomSheet
+import com.lanjie.app.ui.dnsprovider.component.CustomDnsTabContent
+import com.lanjie.app.ui.dnsprovider.component.DnsCategoryChips
+import com.lanjie.app.ui.dnsprovider.component.DnsProviderGroupCard
+import com.lanjie.app.ui.dnsprovider.component.DnsProviderTabs
+import com.lanjie.app.ui.dnsprovider.component.DohBypassCard
+import com.lanjie.app.ui.dnsprovider.component.FallbackDnsBottomSheet
+import com.lanjie.app.ui.dnsprovider.component.FallbackDnsCard
+import org.koin.androidx.compose.koinViewModel
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DnsProviderScreen(
+    modifier: Modifier = Modifier,
+    viewModel: DnsProviderViewModel = koinViewModel(),
+    onNavigateBack: () -> Unit = {}
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    LaunchedEffect(viewModel.effects) {
+        viewModel.effects.collect { effect ->
+            when (effect) {
+                is DnsProviderUiEffect.ShowToast -> {
+                    Toast.makeText(context, effect.messageRes, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    val filteredProviders = remember(state.selectedCategory) {
+        if (state.selectedCategory == null) {
+            DnsProviders.ALL_PROVIDERS
+        } else {
+            DnsProviders.ALL_PROVIDERS.filter { it.category == state.selectedCategory }
+        }
+    }
+
+    Scaffold(
+        modifier = modifier,
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.dns_provider_title)) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
+                ),
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back"
+                        )
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item { Spacer(modifier = Modifier.height(4.dp)) }
+
+            // Active DNS Hero Card
+            item {
+                ActiveDnsHeroCard(
+                    providerName = state.activeProviderName,
+                    protocol = state.activeProtocol,
+                    endpoint = state.activeEndpoint,
+                    fallbackDns = state.fallbackDns,
+                    onEditFallback = { viewModel.onIntent(DnsProviderUiIntent.OpenFallbackSheet) }
+                )
+            }
+
+            // Tabs: Built-in vs Custom
+            item {
+                DnsProviderTabs(
+                    selectedTab = state.selectedTab,
+                    onTabSelected = { viewModel.onIntent(DnsProviderUiIntent.SelectTab(it)) }
+                )
+            }
+
+            // Content according to selected tab
+            if (state.selectedTab == 0) {
+                // Built-in Tab
+                item {
+                    DnsCategoryChips(
+                        selectedCategory = state.selectedCategory,
+                        onSelectCategory = { viewModel.onIntent(DnsProviderUiIntent.SelectCategory(it)) }
+                    )
+                }
+
+                item {
+                    DnsProviderGroupCard(
+                        providers = filteredProviders,
+                        selectedProviderId = state.selectedProviderId,
+                        onSelectProvider = { viewModel.onIntent(DnsProviderUiIntent.SelectProvider(it)) }
+                    )
+                }
+            } else {
+                // Custom Tab
+                item {
+                    CustomDnsTabContent(
+                        isCustomActive = state.isCustomDns,
+                        currentProtocol = state.activeProtocol,
+                        currentEndpoint = state.customDnsDisplay,
+                        currentRelayUrl = state.odohRelayUrl,
+                        onConfigure = { viewModel.onIntent(DnsProviderUiIntent.OpenCustomSheet) }
+                    )
+                }
+            }
+
+            // Fallback DNS Section
+            item {
+                Spacer(modifier = Modifier.height(4.dp))
+                CategoryHeader(stringResource(R.string.dns_category_fallback))
+            }
+            item {
+                FallbackDnsCard(
+                    fallbackDns = state.fallbackDns,
+                    onClick = { viewModel.onIntent(DnsProviderUiIntent.OpenFallbackSheet) }
+                )
+            }
+
+            // Advanced DNS Security Section
+            item {
+                Spacer(modifier = Modifier.height(4.dp))
+                CategoryHeader(stringResource(R.string.dns_category_advanced_security))
+            }
+            item {
+                DohBypassCard(
+                    enabled = state.blockDohBypass,
+                    onCheckedChange = { viewModel.onIntent(DnsProviderUiIntent.ToggleBlockDohBypass(it)) }
+                )
+            }
+
+            item { Spacer(modifier = Modifier.height(24.dp)) }
+        }
+    }
+
+    // Custom DNS BottomSheet
+    if (state.showCustomSheet) {
+        CustomDnsBottomSheet(
+            initialProtocol = state.activeProtocol,
+            initialEndpoint = state.customDnsDisplay,
+            initialRelayUrl = state.odohRelayUrl,
+            onDismiss = { viewModel.onIntent(DnsProviderUiIntent.CloseCustomSheet) },
+            onSave = { protocol, endpoint, relayUrl ->
+                viewModel.onIntent(DnsProviderUiIntent.SaveCustomDns(protocol, endpoint, relayUrl))
+            }
+        )
+    }
+
+    // Fallback DNS BottomSheet
+    if (state.showFallbackSheet) {
+        FallbackDnsBottomSheet(
+            initialFallbackDns = state.fallbackDns,
+            onDismiss = { viewModel.onIntent(DnsProviderUiIntent.CloseFallbackSheet) },
+            onSave = { fallbackIp ->
+                viewModel.onIntent(DnsProviderUiIntent.SaveFallbackDns(fallbackIp))
+            }
+        )
+    }
+}

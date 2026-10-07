@@ -1,0 +1,494 @@
+package com.lanjie.app.ui.settings
+
+import android.app.Application
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.lanjie.app.R
+import com.lanjie.app.data.dao.CustomDnsRuleDao
+import com.lanjie.app.data.dao.DnsLogDao
+import com.lanjie.app.data.dao.FilterListDao
+import com.lanjie.app.data.dao.FirewallRuleDao
+import com.lanjie.app.data.dao.ProtectionProfileDao
+import com.lanjie.app.data.dao.WhitelistDomainDao
+import com.lanjie.app.data.datastore.AppPreferences
+import com.lanjie.app.data.entities.CustomDnsRule
+import com.lanjie.app.data.entities.FilterList
+import com.lanjie.app.data.entities.FilterListBackup
+import com.lanjie.app.data.entities.FirewallRule
+import com.lanjie.app.data.entities.FirewallRuleBackup
+import com.lanjie.app.data.entities.ProfileManager
+import com.lanjie.app.data.entities.RuleType
+import com.lanjie.app.data.entities.SettingsBackup
+import com.lanjie.app.data.entities.WhitelistDomain
+import com.lanjie.app.data.repository.FilterListRepository
+import com.lanjie.app.service.AdBlockVpnService
+import com.lanjie.app.service.ServiceController
+import com.lanjie.app.ui.event.UiEvent
+import com.lanjie.app.ui.event.toast
+import com.lanjie.app.utils.CustomRuleParser
+import com.lanjie.app.worker.DailySummaryScheduler
+import com.lanjie.app.worker.FilterUpdateScheduler
+import com.lanjie.app.service.IptablesManager
+import com.lanjie.app.service.RootProxyService
+import com.lanjie.app.utils.CrashReportingManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+class SettingsViewModel(
+    private val appPrefs: AppPreferences,
+    private val filterRepo: FilterListRepository,
+    private val dnsLogDao: DnsLogDao,
+    private val whitelistDomainDao: WhitelistDomainDao,
+    private val filterListDao: FilterListDao,
+    private val customDnsRuleDao: CustomDnsRuleDao,
+    private val profileDao: ProtectionProfileDao,
+    private val profileManager: ProfileManager,
+    private val firewallRuleDao: FirewallRuleDao,
+    application: Application,
+) : AndroidViewModel(application) {
+
+    val autoReconnect: StateFlow<Boolean> = appPrefs.autoReconnect
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val filterLists: StateFlow<List<FilterList>> = filterListDao.getAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val crashReportingEnabled: StateFlow<Boolean> = appPrefs.crashReportingEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val hideFromRecents: StateFlow<Boolean> = appPrefs.hideFromRecents
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val autoUpdateEnabled: StateFlow<Boolean> = appPrefs.autoUpdateEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val autoUpdateFrequency: StateFlow<String> = appPrefs.autoUpdateFrequency
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            AppPreferences.UPDATE_FREQUENCY_24H
+        )
+
+    val autoUpdateWifiOnly: StateFlow<Boolean> = appPrefs.autoUpdateWifiOnly
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val autoUpdateNotification: StateFlow<String> = appPrefs.autoUpdateNotification
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            AppPreferences.NOTIFICATION_NORMAL
+        )
+
+    val dnsResponseType: StateFlow<String> = appPrefs.dnsResponseType
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            AppPreferences.DNS_RESPONSE_CUSTOM_IP
+        )
+
+    val safeSearchEnabled: StateFlow<Boolean> = appPrefs.safeSearchEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+
+    val youtubeRestrictedMode: StateFlow<Boolean> = appPrefs.youtubeRestrictedMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val dailySummaryEnabled: StateFlow<Boolean> = appPrefs.dailySummaryEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val milestoneNotificationsEnabled: StateFlow<Boolean> = appPrefs.milestoneNotificationsEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val upstreamDns: StateFlow<String> = kotlinx.coroutines.flow.combine(
+        appPrefs.dnsProviderId,
+        appPrefs.upstreamDns
+    ) { id, upstream ->
+        if (id == AppPreferences.CUSTOM_DNS_PROVIDER_ID) {
+            upstream
+        } else {
+            com.lanjie.app.data.entities.DnsProviders.getById(id ?: "")?.name ?: upstream
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppPreferences.DEFAULT_UPSTREAM_DNS)
+
+
+    val routingMode: StateFlow<String> = appPrefs.routingMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppPreferences.ROUTING_MODE_DIRECT)
+
+    val excludeLan: StateFlow<Boolean> = appPrefs.excludeLan
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    private val _events = MutableSharedFlow<UiEvent>(extraBufferCapacity = 1)
+    val events: SharedFlow<UiEvent> = _events.asSharedFlow()
+
+    init {
+        viewModelScope.launch {
+            filterRepo.seedDefaultsIfNeeded()
+        }
+    }
+
+    fun setAutoReconnect(enabled: Boolean) {
+        viewModelScope.launch { appPrefs.setAutoReconnect(enabled) }
+    }
+
+    fun setCrashReportingEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appPrefs.setCrashReportingEnabled(enabled)
+            CrashReportingManager.toggleSentry(getApplication(), enabled)
+        }
+    }
+
+    fun setHideFromRecents(enabled: Boolean) {
+        viewModelScope.launch { appPrefs.setHideFromRecents(enabled) }
+    }
+
+
+    fun setExcludeLan(enabled: Boolean) {
+        viewModelScope.launch {
+            appPrefs.setExcludeLan(enabled)
+            requestVpnRestart()
+        }
+    }
+
+    fun setRoutingModeEnabled(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (enabled) {
+                if (IptablesManager.isRootAvailable()) {
+                    applyRoutingMode(AppPreferences.ROUTING_MODE_ROOT)
+                } else {
+                    _events.toast(R.string.root_not_available)
+                }
+            } else {
+                applyRoutingMode(AppPreferences.ROUTING_MODE_DIRECT)
+            }
+        }
+    }
+
+    private suspend fun applyRoutingMode(mode: String) {
+        val oldMode = appPrefs.routingMode.first()
+        if (oldMode == mode) return
+
+        appPrefs.setRoutingMode(mode)
+        val context = getApplication<Application>().applicationContext
+
+        val isRoot = mode == AppPreferences.ROUTING_MODE_ROOT
+
+        if (AdBlockVpnService.isRunning || RootProxyService.isRunning) {
+            if (isRoot) {
+                val stopIntent = Intent(context, AdBlockVpnService::class.java).apply {
+                    action = AdBlockVpnService.ACTION_STOP
+                }
+                context.startService(stopIntent)
+                delay(800)
+                RootProxyService.start(context)
+            } else {
+                RootProxyService.stop(context)
+                delay(800)
+                val startIntent = Intent(context, AdBlockVpnService::class.java).apply {
+                    action = AdBlockVpnService.ACTION_START
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(startIntent)
+                } else {
+                    context.startService(startIntent)
+                }
+            }
+        }
+    }
+
+    fun setAutoUpdateEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appPrefs.setAutoUpdateEnabled(enabled)
+            FilterUpdateScheduler.scheduleFilterUpdate(
+                getApplication<Application>().applicationContext,
+                appPrefs
+            )
+        }
+    }
+
+    fun setAutoUpdateFrequency(frequency: String) {
+        viewModelScope.launch {
+            appPrefs.setAutoUpdateFrequency(frequency)
+            FilterUpdateScheduler.scheduleFilterUpdate(
+                getApplication<Application>().applicationContext,
+                appPrefs
+            )
+        }
+    }
+
+    fun setAutoUpdateWifiOnly(wifiOnly: Boolean) {
+        viewModelScope.launch {
+            appPrefs.setAutoUpdateWifiOnly(wifiOnly)
+            FilterUpdateScheduler.scheduleFilterUpdate(
+                getApplication<Application>().applicationContext,
+                appPrefs
+            )
+        }
+    }
+
+    fun setAutoUpdateNotification(notificationType: String) {
+        viewModelScope.launch {
+            appPrefs.setAutoUpdateNotification(notificationType)
+        }
+    }
+
+    fun setDnsResponseType(responseType: String) {
+        viewModelScope.launch {
+            appPrefs.setDnsResponseType(responseType)
+            requestVpnRestart()
+        }
+    }
+
+    fun setSafeSearchEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appPrefs.setSafeSearchEnabled(enabled)
+            requestVpnRestart()
+        }
+    }
+
+
+    fun setYoutubeRestrictedMode(enabled: Boolean) {
+        viewModelScope.launch {
+            appPrefs.setYoutubeRestrictedMode(enabled)
+            requestVpnRestart()
+        }
+    }
+
+    fun setDailySummaryEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appPrefs.setDailySummaryEnabled(enabled)
+            if (enabled) {
+                DailySummaryScheduler.scheduleDailySummary(
+                    getApplication<Application>().applicationContext
+                )
+            } else {
+                DailySummaryScheduler.cancelDailySummary(
+                    getApplication<Application>().applicationContext
+                )
+            }
+        }
+    }
+
+    fun setMilestoneNotificationsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appPrefs.setMilestoneNotificationsEnabled(enabled)
+        }
+    }
+
+    fun clearLogs() {
+        viewModelScope.launch {
+            dnsLogDao.clearAll()
+            _events.toast(R.string.filter_log_cleared)
+        }
+    }
+
+    // ── Export Settings ──────────────────────────────────────────────
+    fun exportSettings(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val activeProfile = profileDao.getActive()
+                val backup = SettingsBackup(
+                    upstreamDns = appPrefs.upstreamDns.first(),
+                    fallbackDns = appPrefs.fallbackDns.first(),
+                    autoReconnect = appPrefs.autoReconnect.first(),
+                    themeMode = appPrefs.themeMode.first(),
+                    appLanguage = appPrefs.appLanguage.first(),
+                    safeSearchEnabled = appPrefs.safeSearchEnabled.first(),
+                    youtubeRestrictedMode = appPrefs.youtubeRestrictedMode.first(),
+                    dailySummaryEnabled = appPrefs.dailySummaryEnabled.first(),
+                    milestoneNotificationsEnabled = appPrefs.milestoneNotificationsEnabled.first(),
+                    activeProfileType = activeProfile?.profileType ?: "",
+                    firewallEnabled = appPrefs.firewallEnabled.first(),
+                    filterLists = filterListDao.getAllSync().map { f ->
+                        FilterListBackup(name = f.name, url = f.url, isEnabled = f.isEnabled)
+                    },
+                    whitelistDomains = whitelistDomainDao.getAllDomains()
+                        .map { it.trim().lowercase() }
+                        .filter { it.isNotBlank() }
+                        .distinct(),
+                    blocklistDomains = customDnsRuleDao.getBlockDomains()
+                        .map { it.trim().lowercase() }
+                        .filter { it.isNotBlank() }
+                        .distinct(),
+                    whitelistedApps = appPrefs.getWhitelistedAppsSnapshot().toList(),
+                    customRules = customDnsRuleDao.getAll().map { it.rule }.distinct(),
+                    firewallRules = firewallRuleDao.getEnabledRules().map { r ->
+                        FirewallRuleBackup(
+                            packageName = r.packageName,
+                            blockWifi = r.blockWifi,
+                            blockMobileData = r.blockMobileData,
+                            scheduleEnabled = r.scheduleEnabled,
+                            scheduleStartHour = r.scheduleStartHour,
+                            scheduleStartMinute = r.scheduleStartMinute,
+                            scheduleEndHour = r.scheduleEndHour,
+                            scheduleEndMinute = r.scheduleEndMinute,
+                            isEnabled = r.isEnabled
+                        )
+                    }
+                )
+
+                val jsonFormat = kotlinx.serialization.json.Json { prettyPrint = true }
+                getApplication<Application>().applicationContext.contentResolver.openOutputStream(
+                    uri
+                )?.use { out ->
+                    out.write(
+                        jsonFormat.encodeToString(SettingsBackup.serializer(), backup).toByteArray()
+                    )
+                }
+                _events.toast(R.string.filter_settings_export)
+            } catch (e: Exception) {
+                _events.toast(R.string.filter_export_failed, listOf("${e.message}"))
+            }
+        }
+    }
+
+    // ── Import Settings ──────────────────────────────────────────────
+    fun importSettings(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val jsonStr =
+                    getApplication<Application>().applicationContext.contentResolver.openInputStream(
+                        uri
+                    )?.use { input ->
+                        input.bufferedReader().readText()
+                    } ?: throw Exception("Cannot read file")
+
+                val jsonFormat = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                val backup = jsonFormat.decodeFromString(SettingsBackup.serializer(), jsonStr)
+
+                // Preferences
+                appPrefs.setUpstreamDns(backup.upstreamDns)
+                appPrefs.setFallbackDns(backup.fallbackDns)
+                appPrefs.setAutoReconnect(backup.autoReconnect)
+                appPrefs.setThemeMode(backup.themeMode)
+                appPrefs.setAppLanguage(backup.appLanguage)
+                appPrefs.setSafeSearchEnabled(backup.safeSearchEnabled)
+                appPrefs.setYoutubeRestrictedMode(backup.youtubeRestrictedMode)
+                appPrefs.setDailySummaryEnabled(backup.dailySummaryEnabled)
+                if (backup.dailySummaryEnabled) {
+                    DailySummaryScheduler.scheduleDailySummary(getApplication())
+                } else {
+                    DailySummaryScheduler.cancelDailySummary(getApplication())
+                }
+                appPrefs.setMilestoneNotificationsEnabled(backup.milestoneNotificationsEnabled)
+                appPrefs.setFirewallEnabled(backup.firewallEnabled)
+
+                // Filter lists — add new AND update isEnabled for existing
+                backup.filterLists.forEach { f ->
+                    val existing = filterListDao.getByUrl(f.url)
+                    if (existing != null) {
+                        // Update isEnabled state if it differs
+                        if (existing.isEnabled != f.isEnabled) {
+                            filterListDao.setEnabled(existing.id, f.isEnabled)
+                        }
+                    } else {
+                        filterListDao.insert(
+                            FilterList(
+                                name = f.name,
+                                url = f.url,
+                                isEnabled = f.isEnabled
+                            )
+                        )
+                    }
+                }
+
+                // Whitelist domains — only add new
+                backup.whitelistDomains.forEach { domain ->
+                    val clean = domain.trim().lowercase()
+                    if (clean.isNotBlank() && whitelistDomainDao.exists(clean) == 0) {
+                        whitelistDomainDao.insert(WhitelistDomain(domain = clean))
+                    }
+                }
+
+                // Blocklist domains — support dedicated blocklistDomains list
+                val existingRules = customDnsRuleDao.getAll().map { it.rule }.toSet()
+                backup.blocklistDomains.forEach { domain ->
+                    val clean = domain.trim().lowercase()
+                    if (clean.isNotBlank()) {
+                        val ruleText = "||$clean^"
+                        if (ruleText !in existingRules && customDnsRuleDao.exists(ruleText) == 0) {
+                            customDnsRuleDao.insert(
+                                CustomDnsRule(
+                                    rule = ruleText,
+                                    ruleType = RuleType.BLOCK,
+                                    domain = clean,
+                                    isEnabled = true
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // Whitelisted apps — merge
+                val current = appPrefs.getWhitelistedAppsSnapshot()
+                appPrefs.setWhitelistedApps(current + backup.whitelistedApps.toSet())
+
+                // Custom rules — parse and add (avoid duplicates)
+                val updatedRules = customDnsRuleDao.getAll().map { it.rule }.toSet()
+                backup.customRules.forEach { ruleText ->
+                    val trimmed = ruleText.trim()
+                    if (trimmed.isNotBlank() && trimmed !in updatedRules) {
+                        val rule = CustomRuleParser.parseRule(trimmed)
+                        if (rule != null) {
+                            customDnsRuleDao.insert(rule)
+                        }
+                    }
+                }
+
+                // Firewall rules — only add new
+                backup.firewallRules.forEach { r ->
+                    if (firewallRuleDao.getByPackageName(r.packageName) == null) {
+                        firewallRuleDao.insert(
+                            FirewallRule(
+                                packageName = r.packageName,
+                                blockWifi = r.blockWifi,
+                                blockMobileData = r.blockMobileData,
+                                scheduleEnabled = r.scheduleEnabled,
+                                scheduleStartHour = r.scheduleStartHour,
+                                scheduleStartMinute = r.scheduleStartMinute,
+                                scheduleEndHour = r.scheduleEndHour,
+                                scheduleEndMinute = r.scheduleEndMinute,
+                                isEnabled = r.isEnabled
+                            )
+                        )
+                    }
+                }
+
+                // Restore active profile LAST — after all filter/rule data is in place.
+                if (backup.activeProfileType.isNotBlank()) {
+                    val profile = profileDao.getByType(backup.activeProfileType)
+                    if (profile != null) {
+                        val enabledUrls = backup.filterLists.filter { it.isEnabled }.map { it.url }.joinToString(",")
+                        profileDao.update(profile.copy(enabledFilterUrls = enabledUrls))
+                        profileManager.switchToProfile(profile.id)
+                    }
+                } else {
+                    profileManager.saveActiveProfileFilterUrls()
+                }
+
+                // Refresh in-memory whitelist and custom rules cache
+                filterRepo.loadWhitelist()
+                filterRepo.loadCustomRules()
+
+                _events.toast(R.string.filter_settings_imported)
+                requestVpnRestart()
+            } catch (e: Exception) {
+                _events.toast(R.string.filter_import_failed, listOf("${e.message}"))
+            }
+        }
+    }
+
+    private fun requestVpnRestart() {
+        ServiceController.requestRestart(getApplication<Application>().applicationContext)
+    }
+}

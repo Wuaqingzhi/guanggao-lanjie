@@ -1,0 +1,474 @@
+package com.lanjie.app.ui.home
+
+import android.graphics.drawable.Drawable
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.DataSaverOn
+import androidx.compose.material.icons.filled.QueryStats
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.lanjie.app.R
+import com.lanjie.app.data.datastore.AppPreferences
+import com.lanjie.app.data.repository.FilterListRepository
+import com.lanjie.app.ui.home.component.HomeAppBar
+import com.lanjie.app.ui.home.component.HomeActivityChart
+import com.lanjie.app.ui.home.component.MilestoneBottomSheet
+import com.lanjie.app.ui.home.component.PowerButton
+import com.lanjie.app.ui.home.component.RecentBlockedSection
+import com.lanjie.app.ui.home.component.MiniBarChartDefaults
+import com.lanjie.app.ui.home.component.NetworkSpeedSection
+import com.lanjie.app.ui.home.component.StatCard
+import com.lanjie.app.ui.home.component.TopBlockedSection
+import com.lanjie.app.ui.home.data.RecentLogFilter
+import com.lanjie.app.ui.theme.AccentBlue
+import com.lanjie.app.ui.theme.DangerRed
+import com.lanjie.app.ui.theme.SecurityOrange
+import com.lanjie.app.ui.logs.data.LogFilterStatus
+import com.lanjie.app.ui.theme.TextSecondary
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
+import com.lanjie.app.ui.event.UiEventEffect
+import com.lanjie.app.ui.home.component.BlockedDomainActionSheet
+import com.lanjie.app.ui.home.component.HomeStatusHeader
+import com.lanjie.app.ui.home.component.PrivateDnsWarningCard
+import com.lanjie.app.utils.AppConstants.AVG_AD_SIZE_KB
+import com.lanjie.app.utils.VpnUtils
+import com.lanjie.app.utils.formatCount
+import com.lanjie.app.utils.formatDataSize
+import com.lanjie.app.utils.formatTimeSince
+import com.lanjie.app.utils.formatUptimeShort
+import com.lanjie.app.utils.profileIcon
+import com.google.accompanist.drawablepainter.rememberDrawablePainter
+import org.koin.androidx.compose.koinViewModel
+import java.util.Locale
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HomeScreen(
+    modifier: Modifier = Modifier,
+    onShowVpnConflictDialog: () -> Unit = {},
+    onRequestVpnPermission: () -> Unit,
+    viewModel: HomeViewModel = koinViewModel(),
+    onNavigateToStatisticsScreen: () -> Unit = {},
+    onNavigateToLogScreen: (LogFilterStatus) -> Unit = {},
+    onNavigateToLogsWithQuery: (String) -> Unit = {},
+    onNavigateToProfileScreen: () -> Unit = {},
+    onNavigateToBrowser: (String) -> Unit = {},
+) {
+    val vpnEnabled by viewModel.vpnEnabled.collectAsStateWithLifecycle()
+    val vpnConnecting by viewModel.vpnConnecting.collectAsStateWithLifecycle()
+    val vpnStopping by viewModel.vpnStopping.collectAsStateWithLifecycle()
+    val blockedCount by viewModel.blockedCount.collectAsStateWithLifecycle()
+    val domainCount by viewModel.domainCount.collectAsStateWithLifecycle()
+    val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val filterLoadFailed by viewModel.filterLoadFailed.collectAsStateWithLifecycle()
+    val recentBlocked by viewModel.recentBlocked.collectAsStateWithLifecycle()
+    val recentFilter by viewModel.recentFilter.collectAsStateWithLifecycle()
+    val hourlyStats by viewModel.hourlyStats.collectAsStateWithLifecycle()
+    val dailyStats by viewModel.dailyStats.collectAsStateWithLifecycle()
+    val networkSpeed by viewModel.networkSpeed.collectAsStateWithLifecycle()
+    val milestoneReached by viewModel.milestoneReached.collectAsStateWithLifecycle()
+    val topBlockedDomains by viewModel.topBlockedDomains.collectAsStateWithLifecycle()
+    val protectionUptimeMs by viewModel.protectionUptimeMs.collectAsStateWithLifecycle()
+    val activeProfile by viewModel.activeProfile.collectAsStateWithLifecycle()
+    val securityFilterIds by viewModel.securityFilterIds.collectAsStateWithLifecycle()
+    val whitelistedDomains by viewModel.whitelistedDomains.collectAsStateWithLifecycle()
+    val routingMode by viewModel.routingMode.collectAsStateWithLifecycle()
+    val privateDnsWarning by viewModel.privateDnsWarning.collectAsStateWithLifecycle()
+    val pausedByTrusted by viewModel.pausedByTrusted.collectAsStateWithLifecycle()
+    val pausedTrustedSsid by viewModel.pausedTrustedSsid.collectAsStateWithLifecycle()
+    // Show the trusted-network paused state only while actually off.
+    val showTrustedPause = pausedByTrusted && !vpnEnabled && !vpnConnecting && !vpnStopping
+    val context = LocalContext.current
+    var selectedBlockedDomain by remember { mutableStateOf<SelectedBlockedDomain?>(null) }
+
+    UiEventEffect(viewModel.events)
+
+    LaunchedEffect(Unit) {
+        viewModel.preloadFilter()
+    }
+
+    Scaffold(
+        modifier = modifier,
+        topBar = {
+            HomeAppBar(
+                isLoading = isLoading,
+                filterLoadFailed = filterLoadFailed,
+                viewModel = viewModel,
+                onNavigateToStatisticsScreen = onNavigateToStatisticsScreen,
+                onNavigateToLogScreen = { onNavigateToLogScreen(LogFilterStatus.ALL) },
+                onNavigateToBrowser = onNavigateToBrowser
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .verticalScroll(rememberScrollState())
+                .padding(innerPadding)
+                .padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Private DNS warning — DoT bypasses BlockAds filtering (#145)
+            if (privateDnsWarning) {
+                PrivateDnsWarningCard()
+            }
+
+            val isRootMode = routingMode == AppPreferences.ROUTING_MODE_ROOT
+            HomeStatusHeader(
+                vpnStopping = vpnStopping,
+                vpnConnecting = vpnConnecting,
+                vpnEnabled = vpnEnabled,
+                showTrustedPause = showTrustedPause,
+                isRootMode = isRootMode,
+                pausedTrustedSsid = pausedTrustedSsid,
+                routingMode = routingMode
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                onClick = onNavigateToProfileScreen,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                ),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = profileIcon(activeProfile?.profileType),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = activeProfile?.name ?: stringResource(R.string.profile_name_default),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Icon(
+                        painter = painterResource(R.drawable.ic_edit),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            val haptic = LocalHapticFeedback.current
+            val isFirstVpnChange = remember { mutableStateOf(true) }
+            LaunchedEffect(vpnEnabled) {
+                if (isFirstVpnChange.value) {
+                    isFirstVpnChange.value = false
+                } else {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                }
+            }
+
+            // Power button — never blocked by filter loading
+            PowerButton(
+                isActive = vpnEnabled,
+                isConnecting = vpnConnecting,
+                isStopping = vpnStopping,
+                onClick = {
+                    if (!vpnConnecting && !vpnStopping) {
+                        if (vpnEnabled) {
+                            viewModel.stopVpn(context)
+                        } else {
+                            if (!isRootMode && VpnUtils.isOtherVpnActive(context)) {
+                                onShowVpnConflictDialog()
+                            } else {
+                                onRequestVpnPermission()
+                            }
+                        }
+                    }
+                }
+            )
+
+            Spacer(modifier = Modifier.height(36.dp))
+
+
+            // Stats cards
+            val totalChartData = remember(hourlyStats) {
+                MiniBarChartDefaults.createSparklineData(hourlyStats, isBlocked = false)
+            }
+            val blockedChartData = remember(hourlyStats) {
+                MiniBarChartDefaults.createSparklineData(hourlyStats, isBlocked = true)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                StatCard(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    icon = Icons.Default.QueryStats,
+                    label = stringResource(R.string.total_queries),
+                    value = formatCount(totalCount),
+                    color = MaterialTheme.colorScheme.secondary,
+                    chartData = totalChartData,
+                    showChevron = true,
+                    onClick = { onNavigateToLogScreen(LogFilterStatus.ALL) }
+                )
+                StatCard(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    icon = Icons.Default.Block,
+                    label = stringResource(R.string.blocked_queries),
+                    value = formatCount(blockedCount),
+                    color = DangerRed,
+                    chartData = blockedChartData,
+                    showChevron = true,
+                    onClick = { onNavigateToLogScreen(LogFilterStatus.BLOCKED) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Block rate + Data saved + Uptime card
+            val blockRate = if (totalCount > 0) (blockedCount * 100f / totalCount) else 0f
+            val dataSavedKb = blockedCount * AVG_AD_SIZE_KB
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = stringResource(R.string.home_block_rate),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.home_block_rate),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                        Text(
+                            text = "${String.format(androidx.compose.ui.text.intl.Locale.current.platformLocale, "%.1f", blockRate)}%",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = stringResource(R.string.home_filter_rules),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        Text(
+                            text = formatCount(domainCount),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Real-time network speed row
+            NetworkSpeedSection(networkSpeed = networkSpeed)
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Data saved + Protection uptime row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                StatCard(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    icon = Icons.Default.DataSaverOn,
+                    label = stringResource(R.string.home_data_saved),
+                    value = formatDataSize(dataSavedKb),
+                    color = MaterialTheme.colorScheme.primary
+                )
+                StatCard(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    icon = Icons.Default.Timer,
+                    label = stringResource(R.string.home_protection_uptime),
+                    value = formatUptimeShort(protectionUptimeMs),
+                    color = AccentBlue
+                )
+            }
+
+            // Activity Chart with time range selector
+            HomeActivityChart(
+                hourlyStats = hourlyStats,
+                dailyStats = dailyStats
+            )
+
+            // Top blocked domains
+            TopBlockedSection(
+                topBlockedDomains = topBlockedDomains,
+                onDomainClick = { entry ->
+                    selectedBlockedDomain = SelectedBlockedDomain(
+                        domain = entry.domain,
+                        count = entry.count
+                    )
+                }
+            )
+
+            // Recent blocked domains
+            RecentBlockedSection(
+                recentBlocked = recentBlocked,
+                securityFilterIds = securityFilterIds,
+                currentFilter = recentFilter,
+                onFilterChange = { viewModel.setRecentFilter(it) },
+                onViewAllClick = { onNavigateToLogScreen(LogFilterStatus.ALL) },
+                onEntryClick = { entry ->
+                    selectedBlockedDomain = SelectedBlockedDomain(
+                        domain = entry.domain,
+                        appName = entry.appName,
+                        packageName = entry.packageName,
+                        blockedBy = entry.blockedBy,
+                        isBlocked = entry.isBlocked
+                    )
+                }
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+
+        milestoneReached?.let { milestone ->
+            MilestoneBottomSheet(
+                milestone = milestone,
+                onDismiss = { viewModel.dismissMilestoneDialog(milestone) }
+            )
+        }
+
+        selectedBlockedDomain?.let { target ->
+            val isWhitelisted = whitelistedDomains.contains(target.domain.lowercase())
+            BlockedDomainActionSheet(
+                domain = target.domain,
+                isWhitelisted = isWhitelisted,
+                isBlocked = target.isBlocked,
+                count = target.count,
+                appName = target.appName,
+                packageName = target.packageName,
+                onDismiss = { selectedBlockedDomain = null },
+                onToggleWhitelist = {
+                    if (isWhitelisted) {
+                        viewModel.removeFromWhitelist(target.domain)
+                    } else {
+                        viewModel.addToWhitelist(target.domain)
+                    }
+                    selectedBlockedDomain = null
+                },
+                onAddWildcardWhitelist = {
+                    viewModel.addWildcardWhitelist(target.domain)
+                    selectedBlockedDomain = null
+                },
+                onAddToCustomBlockRules = {
+                    viewModel.addToCustomBlockRules(target.domain)
+                    selectedBlockedDomain = null
+                },
+                onCopyDomain = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("domain", target.domain))
+                    Toast.makeText(context, R.string.domain_copied, Toast.LENGTH_SHORT).show()
+                    selectedBlockedDomain = null
+                },
+                onViewInLogs = {
+                    selectedBlockedDomain = null
+                    onNavigateToLogsWithQuery(target.domain)
+                }
+            )
+        }
+    }
+}
+
+private data class SelectedBlockedDomain(
+    val domain: String,
+    val count: Int? = null,
+    val appName: String = "",
+    val packageName: String = "",
+    val blockedBy: String = "",
+    val isBlocked: Boolean = true
+)
